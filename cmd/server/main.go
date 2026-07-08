@@ -115,14 +115,14 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 	}
 	if existed {
 		log.Printf("%s: attached to persistent session %q", remote, name)
-		if err := sess.Resize(cols, rows); err != nil {
-			log.Printf("%s: resize: %v", remote, err)
-		}
 	} else if name != "" {
 		log.Printf("%s: started persistent session %q", remote, name)
 	}
 
-	out, backlog := sess.Subscribe()
+	// Subscribe registers this client's initial size and re-fits the pty
+	// to the smallest attached client (spec §6.3) -- important the moment
+	// a second client joins with a smaller terminal than the first.
+	out, backlog := sess.Subscribe(cols, rows)
 	defer sess.Unsubscribe(out)
 
 	if len(backlog) > 0 {
@@ -154,7 +154,7 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 					log.Printf("%s: %v", remote, err)
 					continue
 				}
-				if err := sess.Resize(cols, rows); err != nil {
+				if err := sess.Resize(out, cols, rows); err != nil {
 					log.Printf("%s: resize: %v", remote, err)
 				}
 			case proto.FramePing:

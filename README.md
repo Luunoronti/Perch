@@ -130,8 +130,12 @@ perch -server 192.168.1.50:2222 -session praca   # ta sama sesja, ten sam stan
 
 Uwaga: jeśli dwóch klientów podłączy się do tej samej nazwy **jednocześnie**,
 oboje widzą to samo wyjście i oboje mogą pisać — bez blokad ani wskazywania,
-kto właśnie pisze (patrz spec §6.3, poza zakresem MVP). Do sekwencyjnego
-"przenoszenia się" między maszynami działa to bez zarzutu.
+kto właśnie pisze (patrz spec §6.3, poza zakresem MVP). Rozmiar terminala
+sesji dopasowuje się automatycznie do **najmniejszego** aktualnie
+podłączonego klienta (jak w tmuksie) — jeśli ktoś dołączy z mniejszym
+oknem, sesja się zwęża dla wszystkich; gdy się odłączy, wraca do rozmiaru
+pozostałych. Do sekwencyjnego "przenoszenia się" między maszynami działa to
+bez zarzutu.
 
 **Lista działających sesji trwałych:**
 
