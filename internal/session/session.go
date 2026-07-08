@@ -100,6 +100,13 @@ func (s *Session) ExitCode() uint32 {
 	return s.exitCode
 }
 
+// ClientCount returns how many clients are currently subscribed.
+func (s *Session) ClientCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.clients)
+}
+
 func (s *Session) Write(p []byte) (int, error) {
 	return s.pty.Write(p)
 }

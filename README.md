@@ -132,3 +132,18 @@ Uwaga: jeśli dwóch klientów podłączy się do tej samej nazwy **jednocześni
 oboje widzą to samo wyjście i oboje mogą pisać — bez blokad ani wskazywania,
 kto właśnie pisze (patrz spec §6.3, poza zakresem MVP). Do sekwencyjnego
 "przenoszenia się" między maszynami działa to bez zarzutu.
+
+**Lista działających sesji trwałych:**
+
+```bash
+perch -list-sessions
+```
+
+```
+praca (1 client attached)
+logs (0 clients attached)
+```
+
+Pokazuje tylko sesje **trwałe** (nazwane) — jednorazowe nigdy nie są
+widoczne, bo znikają razem z połączeniem. Zakończenie sesji trwałej wciąż
+wymaga `exit` wewnątrz niej — nie ma (jeszcze) zdalnego "kill" z klienta.

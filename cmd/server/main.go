@@ -4,10 +4,12 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"path/filepath"
+	"strings"
 
 	"perch/internal/config"
 	"perch/internal/proto"
@@ -71,14 +73,22 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 		log.Printf("connection from %s closed", remote)
 	}()
 
-	// Handshake: SESSION (name, empty = ephemeral) then RESIZE (spec §4.3).
+	// First frame: either SESSION (name, empty = ephemeral) -- normal
+	// attach flow, followed by RESIZE (spec §4.3) -- or LIST_SESSIONS, a
+	// one-shot request that gets a listing back and no shell at all.
 	frame, err := proto.ReadFrame(conn)
 	if err != nil {
-		log.Printf("%s: read SESSION frame: %v", remote, err)
+		log.Printf("%s: read first frame: %v", remote, err)
+		return
+	}
+	if frame.Type == proto.FrameListSessions {
+		if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameSessionList, Payload: []byte(formatSessionList(mgr.List()))}); err != nil {
+			log.Printf("%s: send session list: %v", remote, err)
+		}
 		return
 	}
 	if frame.Type != proto.FrameSession {
-		log.Printf("%s: expected SESSION as first frame, got %v", remote, frame.Type)
+		log.Printf("%s: expected SESSION or LIST_SESSIONS as first frame, got %v", remote, frame.Type)
 		return
 	}
 	name := string(frame.Payload)
@@ -186,4 +196,19 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 			sess.Terminate()
 		}
 	}
+}
+
+func formatSessionList(infos []session.Info) string {
+	if len(infos) == 0 {
+		return "no persistent sessions running\n"
+	}
+	var b strings.Builder
+	for _, info := range infos {
+		plural := "s"
+		if info.Clients == 1 {
+			plural = ""
+		}
+		fmt.Fprintf(&b, "%s (%d client%s attached)\n", info.Name, info.Clients, plural)
+	}
+	return b.String()
 }

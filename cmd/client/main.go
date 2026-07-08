@@ -23,6 +23,7 @@ func main() {
 	serverAddr := flag.String("server", "", "override server address:port for this run")
 	setDefaultServer := flag.String("default-server", "", "save address:port as the default server in config and exit")
 	sessionName := flag.String("session", "", "persistent session name; omit for a one-shot session that dies on disconnect")
+	listSessions := flag.Bool("list-sessions", false, "list persistent sessions running on the server and exit")
 	flag.Parse()
 
 	path := *configPath
@@ -52,12 +53,44 @@ func main() {
 		cfg.Server = *serverAddr
 	}
 
+	if *listSessions {
+		if err := runListSessions(cfg.Server); err != nil {
+			fmt.Fprintln(os.Stderr, "perch:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	code, err := run(cfg.Server, *sessionName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "perch:", err)
 		os.Exit(1)
 	}
 	os.Exit(int(code))
+}
+
+// runListSessions is a one-shot request/response exchange -- no raw mode,
+// no shell attach. See proto.FrameListSessions.
+func runListSessions(serverAddr string) error {
+	conn, err := net.Dial("tcp", serverAddr)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", serverAddr, err)
+	}
+	defer conn.Close()
+
+	if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameListSessions}); err != nil {
+		return fmt.Errorf("send LIST_SESSIONS: %w", err)
+	}
+
+	frame, err := proto.ReadFrame(conn)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if frame.Type != proto.FrameSessionList {
+		return fmt.Errorf("unexpected response frame type %v", frame.Type)
+	}
+	fmt.Print(string(frame.Payload))
+	return nil
 }
 
 func run(serverAddr, sessionName string) (exitCode uint32, err error) {

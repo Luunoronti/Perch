@@ -1,6 +1,15 @@
 package session
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
+
+// Info is a snapshot of a persistent session for listing purposes.
+type Info struct {
+	Name    string
+	Clients int
+}
 
 // Manager tracks named persistent sessions. Ephemeral sessions (name =="")
 // are never registered here -- each connection gets a brand new one.
@@ -48,4 +57,18 @@ func (m *Manager) Attach(name, shell string, args []string, cols, rows uint16) (
 		m.mu.Unlock()
 	}()
 	return s, false, nil
+}
+
+// List returns a snapshot of all currently running persistent sessions,
+// sorted by name. Ephemeral sessions are never included -- they aren't
+// tracked here.
+func (m *Manager) List() []Info {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Info, 0, len(m.sessions))
+	for name, s := range m.sessions {
+		out = append(out, Info{Name: name, Clients: s.ClientCount()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

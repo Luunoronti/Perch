@@ -20,6 +20,13 @@ const (
 	FramePing    FrameType = 0x07
 	FramePong    FrameType = 0x08
 	FrameSession FrameType = 0x09 // client -> server, sent first: session name (empty = ephemeral)
+
+	// FrameListSessions, sent as the very first frame instead of SESSION,
+	// requests a session listing instead of attaching to a shell. The
+	// server replies with a single FrameSessionList frame and closes the
+	// connection -- there is no RESIZE/DATA phase for this request.
+	FrameListSessions FrameType = 0x0A // client -> server, empty payload
+	FrameSessionList  FrameType = 0x0B // server -> client, human-readable text listing
 )
 
 // MaxFrameLength is the hard cap on a single frame's payload size.
