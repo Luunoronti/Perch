@@ -11,7 +11,7 @@ import (
 
 	"perch/internal/config"
 	"perch/internal/proto"
-	"perch/internal/pty"
+	"perch/internal/session"
 	"perch/internal/winsession"
 )
 
@@ -51,17 +51,19 @@ func main() {
 	log.Printf("perch-server listening on %s (plain TCP, no auth — see spec §8)", cfg.Listen)
 	log.Printf("shell: %s %v", cfg.Shell, cfg.ShellArgs)
 
+	mgr := session.NewManager()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go handleConn(conn, cfg)
+		go handleConn(conn, cfg, mgr)
 	}
 }
 
-func handleConn(conn net.Conn, cfg config.ServerConfig) {
+func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 	remote := conn.RemoteAddr()
 	log.Printf("connection from %s", remote)
 	defer func() {
@@ -69,14 +71,25 @@ func handleConn(conn net.Conn, cfg config.ServerConfig) {
 		log.Printf("connection from %s closed", remote)
 	}()
 
-	// First frame must be RESIZE with the initial terminal size (spec §4.3).
+	// Handshake: SESSION (name, empty = ephemeral) then RESIZE (spec §4.3).
 	frame, err := proto.ReadFrame(conn)
 	if err != nil {
-		log.Printf("%s: read initial frame: %v", remote, err)
+		log.Printf("%s: read SESSION frame: %v", remote, err)
+		return
+	}
+	if frame.Type != proto.FrameSession {
+		log.Printf("%s: expected SESSION as first frame, got %v", remote, frame.Type)
+		return
+	}
+	name := string(frame.Payload)
+
+	frame, err = proto.ReadFrame(conn)
+	if err != nil {
+		log.Printf("%s: read RESIZE frame: %v", remote, err)
 		return
 	}
 	if frame.Type != proto.FrameResize {
-		log.Printf("%s: expected RESIZE as first frame, got %v", remote, frame.Type)
+		log.Printf("%s: expected RESIZE as second frame, got %v", remote, frame.Type)
 		return
 	}
 	cols, rows, err := proto.DecodeResize(frame.Payload)
@@ -85,45 +98,37 @@ func handleConn(conn net.Conn, cfg config.ServerConfig) {
 		return
 	}
 
-	p, err := pty.Start(cfg.Shell, cfg.ShellArgs, cols, rows)
+	sess, existed, err := mgr.Attach(name, cfg.Shell, cfg.ShellArgs, cols, rows)
 	if err != nil {
-		log.Printf("%s: start pty: %v", remote, err)
+		log.Printf("%s: start session: %v", remote, err)
 		return
 	}
-
-	errCh := make(chan error, 2)
-	exitCh := make(chan uint32, 1)
-
-	// ConPTY -> DATA frames -> conn
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := p.Read(buf)
-			if n > 0 {
-				if werr := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameData, Payload: buf[:n]}); werr != nil {
-					errCh <- werr
-					return
-				}
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
+	if existed {
+		log.Printf("%s: attached to persistent session %q", remote, name)
+		if err := sess.Resize(cols, rows); err != nil {
+			log.Printf("%s: resize: %v", remote, err)
 		}
-	}()
+	} else if name != "" {
+		log.Printf("%s: started persistent session %q", remote, name)
+	}
 
-	// conn frames -> DATA -> ConPTY.Write ; RESIZE -> ConPTY.Resize
+	out := sess.Subscribe()
+	defer sess.Unsubscribe(out)
+
+	connErrCh := make(chan error, 1)
+
+	// conn frames -> DATA -> session.Write ; RESIZE -> session.Resize
 	go func() {
 		for {
 			frame, err := proto.ReadFrame(conn)
 			if err != nil {
-				errCh <- err
+				connErrCh <- err
 				return
 			}
 			switch frame.Type {
 			case proto.FrameData:
-				if _, err := p.Write(frame.Payload); err != nil {
-					errCh <- err
+				if _, err := sess.Write(frame.Payload); err != nil {
+					connErrCh <- err
 					return
 				}
 			case proto.FrameResize:
@@ -132,7 +137,7 @@ func handleConn(conn net.Conn, cfg config.ServerConfig) {
 					log.Printf("%s: %v", remote, err)
 					continue
 				}
-				if err := p.Resize(cols, rows); err != nil {
+				if err := sess.Resize(cols, rows); err != nil {
 					log.Printf("%s: resize: %v", remote, err)
 				}
 			case proto.FramePing:
@@ -143,34 +148,35 @@ func handleConn(conn net.Conn, cfg config.ServerConfig) {
 		}
 	}()
 
-	// Wait() polls the process handle directly and is the only reliable exit
-	// signal: after the child exits, ConPTY's Read() can still block forever
-	// because conhost keeps its end of the pipe open (see spec notes).
+	// session output -> DATA frames -> conn
+	writeErrCh := make(chan error, 1)
 	go func() {
-		code, err := p.Wait()
-		if err != nil {
-			errCh <- err
-			return
+		for payload := range out {
+			if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameData, Payload: payload}); err != nil {
+				writeErrCh <- err
+				return
+			}
 		}
-		exitCh <- code
 	}()
 
-	var exitCode uint32
 	select {
-	case code := <-exitCh:
-		exitCode = code
-	case err := <-errCh:
+	case <-sess.Done():
+		if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameExit, Payload: proto.EncodeExit(sess.ExitCode())}); err != nil && err != io.EOF {
+			log.Printf("%s: send EXIT: %v", remote, err)
+		}
+	case err := <-connErrCh:
 		if err != io.EOF {
 			log.Printf("%s: %v", remote, err)
 		}
-	}
-
-	// Unblocks any goroutine still stuck in p.Read().
-	if err := p.Close(); err != nil {
-		log.Printf("%s: close pty: %v", remote, err)
-	}
-
-	if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameExit, Payload: proto.EncodeExit(exitCode)}); err != nil && err != io.EOF {
-		log.Printf("%s: send EXIT: %v", remote, err)
+		if name == "" {
+			// Ephemeral session: nobody else can ever reattach, so the
+			// shell dies with its one and only client.
+			sess.Terminate()
+		}
+	case err := <-writeErrCh:
+		log.Printf("%s: %v", remote, err)
+		if name == "" {
+			sess.Terminate()
+		}
 	}
 }

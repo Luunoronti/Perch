@@ -19,6 +19,7 @@ const (
 	FrameExit    FrameType = 0x06
 	FramePing    FrameType = 0x07
 	FramePong    FrameType = 0x08
+	FrameSession FrameType = 0x09 // client -> server, sent first: session name (empty = ephemeral)
 )
 
 // MaxFrameLength is the hard cap on a single frame's payload size.

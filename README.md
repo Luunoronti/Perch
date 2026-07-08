@@ -79,3 +79,27 @@ Flaga `-server` nadpisuje config.
 Ctrl-C, Ctrl-Z, strzałki, kolory ANSI — wszystko leci surowo do `pwsh`
 (raw mode terminala), tak jak w SSH. Terminal jest zawsze przywracany do
 normalnego trybu przy wyjściu (`exit` w pwsh albo zerwanie połączenia).
+
+## Sesje trwałe (persistent sessions)
+
+Domyślnie (bez `-session`) każde połączenie dostaje własny, jednorazowy
+`pwsh` — ginie razem z połączeniem, dokładnie jak SSH.
+
+Z `-session <nazwa>` dostajesz **trwałą** sesję: serwer trzyma ją żywą (ze
+wszystkimi zmiennymi, katalogiem roboczym, uruchomionymi procesami) nawet
+po rozłączeniu klienta, aż do `exit` wewnątrz powłoki. Możesz się rozłączyć
+z maszyny A i wznowić dokładnie tam, gdzie skończyłeś, z maszyny B:
+
+```bash
+# maszyna A
+perch -server 192.168.1.50:2222 -session praca
+# ... coś robisz, zamykasz terminal / tracisz sieć ...
+
+# maszyna B, później
+perch -server 192.168.1.50:2222 -session praca   # ta sama sesja, ten sam stan
+```
+
+Uwaga: jeśli dwóch klientów podłączy się do tej samej nazwy **jednocześnie**,
+oboje widzą to samo wyjście i oboje mogą pisać — bez blokad ani wskazywania,
+kto właśnie pisze (patrz spec §6.3, poza zakresem MVP). Do sekwencyjnego
+"przenoszenia się" między maszynami działa to bez zarzutu.

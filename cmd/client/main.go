@@ -23,6 +23,7 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to client config JSON (default: <config dir>/client.json)")
 	serverAddr := flag.String("server", "", "override server address:port")
+	sessionName := flag.String("session", "", "persistent session name; omit for a one-shot session that dies on disconnect")
 	flag.Parse()
 
 	path := *configPath
@@ -42,7 +43,7 @@ func main() {
 		cfg.Server = *serverAddr
 	}
 
-	code, err := run(cfg.Server)
+	code, err := run(cfg.Server, *sessionName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "perch:", err)
 		os.Exit(1)
@@ -50,12 +51,16 @@ func main() {
 	os.Exit(int(code))
 }
 
-func run(serverAddr string) (exitCode uint32, err error) {
+func run(serverAddr, sessionName string) (exitCode uint32, err error) {
 	conn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
 		return 1, fmt.Errorf("connect to %s: %w", serverAddr, err)
 	}
 	defer conn.Close()
+
+	if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameSession, Payload: []byte(sessionName)}); err != nil {
+		return 1, fmt.Errorf("send SESSION: %w", err)
+	}
 
 	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
