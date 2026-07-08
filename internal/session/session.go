@@ -10,6 +10,10 @@ import (
 	"perch/internal/pty"
 )
 
+// maxBacklog caps how many trailing bytes of a session's output are kept
+// for replay to newly (re)attaching clients -- see Subscribe.
+const maxBacklog = 256 * 1024
+
 // Session wraps one running shell. If Name is empty it is ephemeral: the
 // caller (server) is expected to kill it when its single client
 // disconnects. If Name is non-empty it is persistent and stays alive,
@@ -21,6 +25,7 @@ type Session struct {
 
 	mu        sync.Mutex
 	clients   map[chan []byte]struct{}
+	backlog   []byte // trailing output, replayed to new subscribers
 	closeOnce sync.Once
 	closed    chan struct{}
 	exitCode  uint32
@@ -103,14 +108,22 @@ func (s *Session) Resize(cols, rows uint16) error {
 	return s.pty.Resize(cols, rows)
 }
 
-// Subscribe registers a new output listener. The caller must Unsubscribe
-// when done to avoid leaking the channel and its goroutine.
-func (s *Session) Subscribe() chan []byte {
-	ch := make(chan []byte, 256)
+// Subscribe registers a new output listener and returns it along with the
+// session's current backlog (the trailing output produced so far), so a
+// (re)attaching client can be caught up on what it missed instead of
+// facing a blank terminal. The backlog is captured atomically with
+// registration -- no output can be produced between the two -- so nothing
+// is duplicated or dropped in the handoff to live broadcasts on ch.
+//
+// The caller must Unsubscribe when done to avoid leaking the channel and
+// its goroutine.
+func (s *Session) Subscribe() (ch chan []byte, backlog []byte) {
+	ch = make(chan []byte, 256)
 	s.mu.Lock()
+	backlog = append([]byte(nil), s.backlog...)
 	s.clients[ch] = struct{}{}
 	s.mu.Unlock()
-	return ch
+	return ch, backlog
 }
 
 // Unsubscribe removes and closes a listener registered with Subscribe.
@@ -126,6 +139,17 @@ func (s *Session) Unsubscribe(ch chan []byte) {
 func (s *Session) broadcast(b []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.backlog = append(s.backlog, b...)
+	if len(s.backlog) > maxBacklog {
+		// Copy rather than reslice: a long-lived persistent session must
+		// not keep pinning an ever-growing backing array via a small
+		// trailing slice of it.
+		trimmed := make([]byte, maxBacklog)
+		copy(trimmed, s.backlog[len(s.backlog)-maxBacklog:])
+		s.backlog = trimmed
+	}
+
 	for ch := range s.clients {
 		select {
 		case ch <- b:

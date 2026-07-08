@@ -112,8 +112,15 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 		log.Printf("%s: started persistent session %q", remote, name)
 	}
 
-	out := sess.Subscribe()
+	out, backlog := sess.Subscribe()
 	defer sess.Unsubscribe(out)
+
+	if len(backlog) > 0 {
+		if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameData, Payload: backlog}); err != nil {
+			log.Printf("%s: send backlog: %v", remote, err)
+			return
+		}
+	}
 
 	connErrCh := make(chan error, 1)
 
