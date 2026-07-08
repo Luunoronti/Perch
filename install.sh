@@ -45,8 +45,26 @@ mkdir -p "$INSTALL_DIR"
 install -m 0755 "$TMP/perch" "$INSTALL_DIR/perch"
 
 echo "perch: installed to ${INSTALL_DIR}/perch"
+
 case ":$PATH:" in
 	*":$INSTALL_DIR:"*) ;;
-	*) echo "perch: NOTE: ${INSTALL_DIR} is not on your PATH, add it to your shell profile" ;;
+	*)
+		# Not on PATH right now (this may just be a non-interactive `sh` losing
+		# it, or a real gap) -- add it to the user's shell rc so future shells
+		# pick it up, unless it's already there.
+		RC=""
+		case "${SHELL:-}" in
+			*/zsh) RC="$HOME/.zshrc" ;;
+			*/bash) RC="$HOME/.bashrc" ;;
+			*) RC="$HOME/.profile" ;;
+		esac
+		LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+		if [ -f "$RC" ] && grep -qF "$INSTALL_DIR" "$RC" 2>/dev/null; then
+			echo "perch: ${INSTALL_DIR} already referenced in ${RC}, restart your shell to pick it up"
+		else
+			printf '\n# added by perch install.sh\n%s\n' "$LINE" >>"$RC"
+			echo "perch: added ${INSTALL_DIR} to PATH in ${RC} -- restart your shell (or run: source ${RC})"
+		fi
+		;;
 esac
 echo "perch: run 'perch -server <windows-host>:2222' to connect"
