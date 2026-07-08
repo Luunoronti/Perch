@@ -12,10 +12,15 @@ ruch do podsieci LAN (patrz niżej). Nie wystawiaj tego portu do internetu.
 
 ## Instalacja (gotowe binarki)
 
-Przy każdym tagu `vX.Y.Z` GitHub Actions buduje wszystkie trzy artefakty i
+Przy każdym tagu `vX.Y.Z` GitHub Actions buduje wszystkie artefakty i
 publikuje je jako [GitHub Release](../../releases/latest):
 `perch-server.exe` (windows/amd64), `perch-386` i `perch-amd64` (klient
-linux), plus `checksums.txt`.
+linux), `perch-windows-amd64.exe` (klient windows), plus `checksums.txt`.
+
+**Uwaga:** protokół nie ma negocjacji wersji. Niezgodna para klient/serwer
+(np. stary serwer + nowy klient) rozłącza się od razu z niejasnym błędem
+typu `expected RESIZE as first frame, got 9` — jeśli to widzisz, zaktualizuj
+oba binarki do tego samego tagu z Releases.
 
 **Klient na Linuksie — jedna linia:**
 
@@ -30,15 +35,21 @@ do `~/.local/bin/perch`).
 pojedynczy plik, bez instalatora. Zobacz sekcję "Uruchamianie serwera"
 niżej, jak go poprawnie odpalić.
 
+**Klient na Windows:** pobierz `perch-windows-amd64.exe` ręcznie z release'a
+i uruchom z PowerShell/cmd — działanie identyczne jak na Linuksie (raw mode,
+resize, sesje trwałe), tylko wykrywanie zmiany rozmiaru terminala działa
+przez polling zamiast `SIGWINCH` (Windows nie ma takiego sygnału).
+
 ## Build ze źródeł
 
 ```bash
-make            # server (windows/amd64) + client (linux/386, linux/amd64)
+make            # server + client (linux/386, linux/amd64, windows/amd64)
 make server     # tylko serwer
-make client     # tylko klient (obie architektury)
+make client     # tylko klient (wszystkie trzy warianty)
 ```
 
-Artefakty trafiają do `dist/` (`perch-server.exe`, `perch-386`, `perch-amd64`).
+Artefakty trafiają do `dist/` (`perch-server.exe`, `perch-386`,
+`perch-amd64`, `perch-windows-amd64.exe`).
 
 ## Uruchamianie serwera — WYMAGANIE
 

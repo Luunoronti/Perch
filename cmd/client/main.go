@@ -10,9 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 
 	"golang.org/x/term"
 
@@ -95,10 +93,6 @@ func run(serverAddr, sessionName string) (exitCode uint32, err error) {
 	}
 	defer restore()
 
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
-
 	exitCh := make(chan uint32, 1)
 	errCh := make(chan error, 2)
 
@@ -148,16 +142,15 @@ func run(serverAddr, sessionName string) (exitCode uint32, err error) {
 		}
 	}()
 
-	// SIGWINCH -> RESIZE
-	go func() {
-		for range winch {
-			cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
-			if err != nil {
-				continue
-			}
-			_ = proto.WriteFrame(conn, proto.Frame{Type: proto.FrameResize, Payload: proto.EncodeResize(uint16(cols), uint16(rows))})
-		}
-	}()
+	// Terminal resize -> RESIZE frame (SIGWINCH on Unix, polling on Windows;
+	// see resize_unix.go / resize_windows.go).
+	stopResize := watchResize(
+		func() (int, int, error) { return term.GetSize(int(os.Stdout.Fd())) },
+		func(cols, rows uint16) {
+			_ = proto.WriteFrame(conn, proto.Frame{Type: proto.FrameResize, Payload: proto.EncodeResize(cols, rows)})
+		},
+	)
+	defer stopResize()
 
 	select {
 	case code := <-exitCh:

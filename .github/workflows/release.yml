@@ -27,9 +27,12 @@ jobs:
       - name: Build client (linux/amd64)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/perch-amd64 ./cmd/client
 
+      - name: Build client (windows/amd64)
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o dist/perch-windows-amd64.exe ./cmd/client
+
       - name: Checksums
         working-directory: dist
-        run: sha256sum perch-server.exe perch-386 perch-amd64 > checksums.txt
+        run: sha256sum perch-server.exe perch-386 perch-amd64 perch-windows-amd64.exe > checksums.txt
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -38,5 +41,6 @@ jobs:
             dist/perch-server.exe
             dist/perch-386
             dist/perch-amd64
+            dist/perch-windows-amd64.exe
             dist/checksums.txt
           generate_release_notes: true
