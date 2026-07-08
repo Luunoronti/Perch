@@ -73,6 +73,12 @@ func LoadClientConfig(path string) (ClientConfig, error) {
 	return cfg, nil
 }
 
+// SaveClientConfig persists cfg to path, e.g. after the user overrides
+// `server` on the command line so future runs don't need to repeat it.
+func SaveClientConfig(path string, cfg ClientConfig) error {
+	return saveJSON(path, cfg)
+}
+
 func loadJSON(path string, v interface{}) error {
 	data, err := os.ReadFile(path)
 	if err != nil {

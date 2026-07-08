@@ -73,8 +73,16 @@ New-NetFirewallRule -DisplayName "Perch" -Direction Inbound -Action Allow `
 perch -server 192.168.1.50:2222
 ```
 
+Żeby nie podawać adresu za każdym razem, zapisz go raz jako domyślny:
+
+```bash
+perch -default-server 192.168.1.50:2222   # zapisuje do configu i kończy działanie
+perch                                     # dalej łączy się z zapisanym adresem
+```
+
 Config klienta: `~/.config/perch/client.json` (`server: "host:port"`).
-Flaga `-server` nadpisuje config.
+Flaga `-server` nadpisuje adres tylko na czas jednego uruchomienia, bez
+zapisywania.
 
 Ctrl-C, Ctrl-Z, strzałki, kolory ANSI — wszystko leci surowo do `pwsh`
 (raw mode terminala), tak jak w SSH. Terminal jest zawsze przywracany do

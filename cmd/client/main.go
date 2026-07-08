@@ -22,7 +22,8 @@ import (
 
 func main() {
 	configPath := flag.String("config", "", "path to client config JSON (default: <config dir>/client.json)")
-	serverAddr := flag.String("server", "", "override server address:port")
+	serverAddr := flag.String("server", "", "override server address:port for this run")
+	setDefaultServer := flag.String("default-server", "", "save address:port as the default server in config and exit")
 	sessionName := flag.String("session", "", "persistent session name; omit for a one-shot session that dies on disconnect")
 	flag.Parse()
 
@@ -39,6 +40,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+
+	if *setDefaultServer != "" {
+		cfg.Server = *setDefaultServer
+		if err := config.SaveClientConfig(path, cfg); err != nil {
+			log.Fatalf("save config: %v", err)
+		}
+		fmt.Printf("perch: default server set to %s in %s\n", cfg.Server, path)
+		os.Exit(0)
+	}
+
 	if *serverAddr != "" {
 		cfg.Server = *serverAddr
 	}
