@@ -40,6 +40,16 @@ i uruchom z PowerShell/cmd — działanie identyczne jak na Linuksie (raw mode,
 resize, sesje trwałe), tylko wykrywanie zmiany rozmiaru terminala działa
 przez polling zamiast `SIGWINCH` (Windows nie ma takiego sygnału).
 
+**Windows Defender / SmartScreen:** binarki są nieopisane (bez podpisu
+cyfrowego), więc heurystyka ML czasem je fałszywie oznacza jako trojana
+(`Sabsik.TE.A!ml` i podobne — typowy false-positive dla nieopisanych
+narzędzi Go robiących surowe połączenia sieciowe + operacje na terminalu,
+znany problem też u ttyd/gotty/chisel). Jeśli Defender usunie plik:
+Windows Security → Protection history → Restore, a potem dodaj wykluczenie
+dla folderu z binarką (Virus & threat protection → Manage settings →
+Exclusions), żeby nie łapało przy każdym pobraniu. Repo jest publiczne —
+zweryfikuj kod źródłowy, jeśli chcesz się upewnić.
+
 ## Build ze źródeł
 
 ```bash
