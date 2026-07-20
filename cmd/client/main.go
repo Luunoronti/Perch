@@ -11,6 +11,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"golang.org/x/term"
 
@@ -93,6 +95,73 @@ func runListSessions(serverAddr string) error {
 	return nil
 }
 
+// marginClearer wipes the region of the local terminal that lies outside
+// the shared session viewport. The server fits the pty to the smallest
+// attached client, so a client whose window is larger than the session has
+// extra columns (on the right) and/or rows (at the bottom) the pty never
+// draws into -- they keep whatever stale bytes were there ("garbage"). We
+// erase only that margin, leaving the active viewport untouched, so no
+// repaint from the shell is needed.
+//
+// Its mutex both guards the size fields and serializes writes to out with
+// the main output stream, so a clear can never interleave mid-sequence with
+// session output.
+type marginClearer struct {
+	mu       sync.Mutex
+	out      io.Writer
+	appCols  int // applied session size (0 until the server reports it)
+	appRows  int
+	termCols int // this terminal's own size
+	termRows int
+}
+
+// writeData writes session output under the same lock the clears use.
+func (m *marginClearer) writeData(p []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, err := m.out.Write(p)
+	return err
+}
+
+// setTerm records this terminal's size and re-wipes the margin.
+func (m *marginClearer) setTerm(cols, rows int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.termCols, m.termRows = cols, rows
+	m.clearLocked()
+}
+
+// setApplied records the session's applied size and re-wipes the margin.
+func (m *marginClearer) setApplied(cols, rows int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appCols, m.appRows = cols, rows
+	m.clearLocked()
+}
+
+func (m *marginClearer) clearLocked() {
+	if m.appCols <= 0 || m.appRows <= 0 {
+		return // don't know the session size yet
+	}
+	var b strings.Builder
+	b.WriteString("\x1b7") // DECSC: save cursor position + attributes
+	// Right margin: for each row within the viewport height, erase from the
+	// first out-of-viewport column to the end of the line.
+	if m.termCols > m.appCols {
+		for r := 1; r <= m.appRows && r <= m.termRows; r++ {
+			fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[K", r, m.appCols+1)
+		}
+	}
+	// Bottom margin: erase everything below the viewport in one go.
+	if m.termRows > m.appRows {
+		fmt.Fprintf(&b, "\x1b[%d;1H\x1b[J", m.appRows+1)
+	}
+	b.WriteString("\x1b8") // DECRC: restore cursor
+	if b.Len() > len("\x1b7\x1b8") {
+		m.out.Write([]byte(b.String()))
+	}
+}
+
 func run(serverAddr, sessionName string) (exitCode uint32, err error) {
 	conn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
@@ -126,6 +195,8 @@ func run(serverAddr, sessionName string) (exitCode uint32, err error) {
 	}
 	defer restore()
 
+	mc := &marginClearer{out: os.Stdout, termCols: cols, termRows: rows}
+
 	exitCh := make(chan uint32, 1)
 	errCh := make(chan error, 2)
 
@@ -157,9 +228,16 @@ func run(serverAddr, sessionName string) (exitCode uint32, err error) {
 			}
 			switch frame.Type {
 			case proto.FrameData:
-				if _, werr := os.Stdout.Write(frame.Payload); werr != nil {
+				if werr := mc.writeData(frame.Payload); werr != nil {
 					errCh <- werr
 					return
+				}
+			case proto.FrameResize:
+				// Server-reported applied session size (may be smaller than
+				// our window if another, smaller client is attached).
+				ac, ar, derr := proto.DecodeResize(frame.Payload)
+				if derr == nil {
+					mc.setApplied(int(ac), int(ar))
 				}
 			case proto.FrameExit:
 				code, err := proto.DecodeExit(frame.Payload)
@@ -181,6 +259,10 @@ func run(serverAddr, sessionName string) (exitCode uint32, err error) {
 		func() (int, int, error) { return term.GetSize(int(os.Stdout.Fd())) },
 		func(cols, rows uint16) {
 			_ = proto.WriteFrame(conn, proto.Frame{Type: proto.FrameResize, Payload: proto.EncodeResize(cols, rows)})
+			// Our window changed size; re-wipe the margin against the new
+			// dimensions (the applied session size arrives separately via a
+			// server RESIZE frame if it changes too).
+			mc.setTerm(int(cols), int(rows))
 		},
 	)
 	defer stopResize()

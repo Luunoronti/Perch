@@ -165,13 +165,27 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 		}
 	}()
 
-	// session output -> DATA frames -> conn
+	// session output -> DATA frames -> conn ; applied pty size -> RESIZE
+	// frames -> conn (so the client can wipe the margin of its terminal that
+	// falls outside the shared session viewport -- see spec §6.3).
 	writeErrCh := make(chan error, 1)
 	go func() {
-		for payload := range out {
-			if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameData, Payload: payload}); err != nil {
-				writeErrCh <- err
-				return
+		for {
+			select {
+			case payload, ok := <-out.Data():
+				if !ok {
+					return
+				}
+				if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameData, Payload: payload}); err != nil {
+					writeErrCh <- err
+					return
+				}
+			case sz := <-out.Resized():
+				cols, rows := sz.Cols, sz.Rows
+				if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameResize, Payload: proto.EncodeResize(cols, rows)}); err != nil {
+					writeErrCh <- err
+					return
+				}
 			}
 		}
 	}()

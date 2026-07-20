@@ -14,9 +14,44 @@ import (
 // for replay to newly (re)attaching clients -- see Subscribe.
 const maxBacklog = 256 * 1024
 
-// termSize is one client's last-known terminal dimensions.
-type termSize struct {
-	cols, rows uint16
+// Size is a terminal's dimensions in character cells.
+type Size struct {
+	Cols, Rows uint16
+}
+
+// Client is one attached listener. data carries live/backlog output;
+// resized carries the pty size actually applied to the session (which may
+// be smaller than this client's own terminal, since the pty is fitted to
+// the smallest attached client -- see recomputeSize). The client uses it to
+// wipe the margin of its terminal that the pty never draws into. resized is
+// buffered and coalesced: only the latest applied size matters.
+type Client struct {
+	data    chan []byte
+	resized chan Size
+}
+
+// Data is the channel of output payloads for this client; it is closed by
+// Unsubscribe.
+func (c *Client) Data() <-chan []byte { return c.data }
+
+// Resized is the channel of applied session sizes for this client.
+func (c *Client) Resized() <-chan Size { return c.resized }
+
+// notifyResize delivers the latest applied size, dropping any unread stale
+// value first so a slow reader always ends up with the current size rather
+// than a queue of outdated ones.
+func (c *Client) notifyResize(sz Size) {
+	for {
+		select {
+		case c.resized <- sz:
+			return
+		default:
+			select {
+			case <-c.resized:
+			default:
+			}
+		}
+	}
 }
 
 // Session wraps one running shell. If Name is empty it is ephemeral: the
@@ -29,10 +64,10 @@ type Session struct {
 	pty pty.PTY
 
 	mu          sync.Mutex
-	clients     map[chan []byte]struct{}
-	clientSizes map[chan []byte]termSize // tmux-style: pty is sized to the smallest attached client
-	curSize     termSize                 // last size actually applied to the pty
-	backlog     []byte                   // trailing output, replayed to new subscribers
+	clients     map[*Client]struct{}
+	clientSizes map[*Client]Size // tmux-style: pty is sized to the smallest attached client
+	curSize     Size             // last size actually applied to the pty
+	backlog     []byte           // trailing output, replayed to new subscribers
 	closeOnce   sync.Once
 	closed      chan struct{}
 	exitCode    uint32
@@ -46,9 +81,9 @@ func newSession(name string, shell string, args []string, cols, rows uint16) (*S
 	s := &Session{
 		Name:        name,
 		pty:         p,
-		clients:     make(map[chan []byte]struct{}),
-		clientSizes: make(map[chan []byte]termSize),
-		curSize:     termSize{cols, rows},
+		clients:     make(map[*Client]struct{}),
+		clientSizes: make(map[*Client]Size),
+		curSize:     Size{cols, rows},
 		closed:      make(chan struct{}),
 	}
 	go s.pump()
@@ -120,12 +155,11 @@ func (s *Session) Write(p []byte) (int, error) {
 	return s.pty.Write(p)
 }
 
-// Resize updates ch's (the client identified by its Subscribe channel)
-// known terminal size and re-fits the pty to the smallest currently
-// attached client -- see recomputeSize.
-func (s *Session) Resize(ch chan []byte, cols, rows uint16) error {
+// Resize updates c's known terminal size and re-fits the pty to the
+// smallest currently attached client -- see recomputeSize.
+func (s *Session) Resize(c *Client, cols, rows uint16) error {
 	s.mu.Lock()
-	s.clientSizes[ch] = termSize{cols, rows}
+	s.clientSizes[c] = Size{cols, rows}
 	s.mu.Unlock()
 	return s.recomputeSize()
 }
@@ -140,26 +174,37 @@ func (s *Session) Resize(ch chan []byte, cols, rows uint16) error {
 //
 // The caller must Unsubscribe when done to avoid leaking the channel and
 // its goroutine.
-func (s *Session) Subscribe(cols, rows uint16) (ch chan []byte, backlog []byte) {
-	ch = make(chan []byte, 256)
+func (s *Session) Subscribe(cols, rows uint16) (c *Client, backlog []byte) {
+	c = &Client{
+		data:    make(chan []byte, 256),
+		resized: make(chan Size, 1),
+	}
 	s.mu.Lock()
 	backlog = append([]byte(nil), s.backlog...)
-	s.clients[ch] = struct{}{}
-	s.clientSizes[ch] = termSize{cols, rows}
+	s.clients[c] = struct{}{}
+	s.clientSizes[c] = Size{cols, rows}
 	s.mu.Unlock()
 	s.recomputeSize()
-	return ch, backlog
+	// Tell the new client the applied size even when it didn't change it
+	// (e.g. a larger client joining an already-smaller session):
+	// recomputeSize only notifies on a change, so seed this one explicitly
+	// so it can wipe its margin right away.
+	s.mu.Lock()
+	applied := s.curSize
+	s.mu.Unlock()
+	c.notifyResize(applied)
+	return c, backlog
 }
 
 // Unsubscribe removes and closes a listener registered with Subscribe,
 // then re-fits the pty in case the departing client was the one
 // constraining the size to something smaller than the rest.
-func (s *Session) Unsubscribe(ch chan []byte) {
+func (s *Session) Unsubscribe(c *Client) {
 	s.mu.Lock()
-	if _, ok := s.clients[ch]; ok {
-		delete(s.clients, ch)
-		delete(s.clientSizes, ch)
-		close(ch)
+	if _, ok := s.clients[c]; ok {
+		delete(s.clients, c)
+		delete(s.clientSizes, c)
+		close(c.data)
 	}
 	s.mu.Unlock()
 	s.recomputeSize()
@@ -171,14 +216,14 @@ func (s *Session) Unsubscribe(ch chan []byte) {
 // client ever gets a viewport bigger than its own actual terminal.
 func (s *Session) recomputeSize() error {
 	s.mu.Lock()
-	var min termSize
+	var min Size
 	first := true
 	for _, sz := range s.clientSizes {
-		if first || sz.cols < min.cols {
-			min.cols = sz.cols
+		if first || sz.Cols < min.Cols {
+			min.Cols = sz.Cols
 		}
-		if first || sz.rows < min.rows {
-			min.rows = sz.rows
+		if first || sz.Rows < min.Rows {
+			min.Rows = sz.Rows
 		}
 		first = false
 	}
@@ -187,8 +232,13 @@ func (s *Session) recomputeSize() error {
 		return nil
 	}
 	s.curSize = min
+	// Broadcast the new applied size so every client can re-wipe the margin
+	// its terminal has beyond the (now smaller/larger) session viewport.
+	for c := range s.clients {
+		c.notifyResize(min)
+	}
 	s.mu.Unlock()
-	return s.pty.Resize(min.cols, min.rows)
+	return s.pty.Resize(min.Cols, min.Rows)
 }
 
 func (s *Session) broadcast(b []byte) {
@@ -205,9 +255,9 @@ func (s *Session) broadcast(b []byte) {
 		s.backlog = trimmed
 	}
 
-	for ch := range s.clients {
+	for c := range s.clients {
 		select {
-		case ch <- b:
+		case c.data <- b:
 		default:
 			// Slow client, drop rather than stall the whole session.
 		}

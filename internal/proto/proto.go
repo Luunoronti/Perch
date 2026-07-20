@@ -11,7 +11,11 @@ import (
 type FrameType byte
 
 const (
-	FrameAuth    FrameType = 0x01 // reserved, unused (see spec §8)
+	FrameAuth FrameType = 0x01 // reserved, unused (see spec §8)
+	// FrameResize is bidirectional: client -> server carries the client's
+	// own terminal size; server -> client carries the size actually applied
+	// to the session (fitted to the smallest attached client), so the client
+	// can wipe the margin of its window that falls outside that viewport.
 	FrameResize  FrameType = 0x02
 	FrameData    FrameType = 0x03
 	FrameAuthOK  FrameType = 0x04 // reserved, unused
