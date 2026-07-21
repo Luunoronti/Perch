@@ -137,6 +137,22 @@ oknem, sesja się zwęża dla wszystkich; gdy się odłączy, wraca do rozmiaru
 pozostałych. Do sekwencyjnego "przenoszenia się" między maszynami działa to
 bez zarzutu.
 
+**Terminal o stałym rozmiarze (`-fixed-size`):** niektóre terminale (np.
+fizyczna konsola, okno bez możliwości zmiany rozmiaru) nie potrafią się
+dopasować do zwężającej się sesji — dostają wtedy zniekształcony obraz.
+Flaga `-fixed-size` mówi serwerowi "to ja jestem autorytetem": dopóki taki
+klient jest podłączony, sesja ma **dokładnie jego** rozmiar, niezależnie od
+tego, czy inni podłączeni są więksi czy mniejsi.
+
+```bash
+perch -server 192.168.1.50:2222 -session praca -fixed-size
+```
+
+Jeśli kilku klientów oflaguje się jako `-fixed-size` jednocześnie, liczy
+się **ten, który podłączył się ostatni**. Gdy on się rozłączy, autorytet
+wraca do poprzedniego wciąż podłączonego przypiętego klienta (jeśli taki
+jest) — a nie do zwykłej reguły najmniejszego wspólnego rozmiaru.
+
 **Lista działających sesji trwałych:**
 
 ```bash
