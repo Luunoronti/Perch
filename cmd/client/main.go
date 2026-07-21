@@ -26,6 +26,7 @@ func main() {
 	setDefaultServer := flag.String("default-server", "", "save address:port as the default server in config and exit")
 	sessionName := flag.String("session", "", "persistent session name; omit for a one-shot session that dies on disconnect")
 	listSessions := flag.Bool("list-sessions", false, "list persistent sessions running on the server and exit")
+	fixedSize := flag.Bool("fixed-size", false, "declare this terminal as fixed-size: the session follows its size exactly instead of the smallest attached client (last one to set this wins)")
 	flag.Parse()
 
 	path := *configPath
@@ -63,7 +64,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	code, err := run(cfg.Server, *sessionName)
+	code, err := run(cfg.Server, *sessionName, *fixedSize)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "perch:", err)
 		os.Exit(1)
@@ -162,14 +163,14 @@ func (m *marginClearer) clearLocked() {
 	}
 }
 
-func run(serverAddr, sessionName string) (exitCode uint32, err error) {
+func run(serverAddr, sessionName string, fixedSize bool) (exitCode uint32, err error) {
 	conn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
 		return 1, fmt.Errorf("connect to %s: %w", serverAddr, err)
 	}
 	defer conn.Close()
 
-	if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameSession, Payload: []byte(sessionName)}); err != nil {
+	if err := proto.WriteFrame(conn, proto.Frame{Type: proto.FrameSession, Payload: proto.EncodeSession(sessionName, fixedSize)}); err != nil {
 		return 1, fmt.Errorf("send SESSION: %w", err)
 	}
 

@@ -98,6 +98,30 @@ func DecodeResize(payload []byte) (cols, rows uint16, err error) {
 	return cols, rows, nil
 }
 
+// sessionFlagPinned marks a client's terminal as fixed-size in a SESSION
+// payload -- see EncodeSession.
+const sessionFlagPinned = 0x01
+
+// EncodeSession packs a session name and its "pinned" (fixed-size
+// terminal) flag into a SESSION payload: one flag byte followed by the
+// UTF-8 session name.
+func EncodeSession(name string, pinned bool) []byte {
+	var flags byte
+	if pinned {
+		flags |= sessionFlagPinned
+	}
+	return append([]byte{flags}, name...)
+}
+
+// DecodeSession unpacks a SESSION payload into its session name and
+// pinned flag.
+func DecodeSession(payload []byte) (name string, pinned bool, err error) {
+	if len(payload) < 1 {
+		return "", false, fmt.Errorf("proto: SESSION payload too short")
+	}
+	return string(payload[1:]), payload[0]&sessionFlagPinned != 0, nil
+}
+
 // EncodeExit packs an exit code into an EXIT payload.
 func EncodeExit(code uint32) []byte {
 	buf := make([]byte, 4)

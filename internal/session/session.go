@@ -25,9 +25,16 @@ type Size struct {
 // the smallest attached client -- see recomputeSize). The client uses it to
 // wipe the margin of its terminal that the pty never draws into. resized is
 // buffered and coalesced: only the latest applied size matters.
+//
+// pinned marks a fixed-size terminal (one that cannot itself be resized,
+// e.g. a hardware console): while such a client is attached, the session
+// size follows *its* size exactly instead of the smallest-attached-client
+// rule. It is set once at Subscribe time and does not change for the life
+// of the connection.
 type Client struct {
 	data    chan []byte
 	resized chan Size
+	pinned  bool
 }
 
 // Data is the channel of output payloads for this client; it is closed by
@@ -66,8 +73,13 @@ type Session struct {
 	mu          sync.Mutex
 	clients     map[*Client]struct{}
 	clientSizes map[*Client]Size // tmux-style: pty is sized to the smallest attached client
-	curSize     Size             // last size actually applied to the pty
-	backlog     []byte           // trailing output, replayed to new subscribers
+	// pinnedOrder holds currently attached pinned (fixed-size) clients,
+	// oldest first. The last element governs the session size -- see
+	// recomputeSize. When it disconnects, authority falls back to the next
+	// most recently pinned client still attached, if any.
+	pinnedOrder []*Client
+	curSize     Size   // last size actually applied to the pty
+	backlog     []byte // trailing output, replayed to new subscribers
 	closeOnce   sync.Once
 	closed      chan struct{}
 	exitCode    uint32
@@ -151,6 +163,14 @@ func (s *Session) ClientCount() int {
 	return len(s.clients)
 }
 
+// Pinned reports whether a fixed-size client currently governs this
+// session's size (see recomputeSize).
+func (s *Session) Pinned() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pinnedOrder) > 0
+}
+
 func (s *Session) Write(p []byte) (int, error) {
 	return s.pty.Write(p)
 }
@@ -172,17 +192,29 @@ func (s *Session) Resize(c *Client, cols, rows uint16) error {
 // produced between the two -- so nothing is duplicated or dropped in the
 // handoff to live broadcasts on ch.
 //
+// pinned marks this client as a fixed-size terminal: for as long as it
+// stays attached, the session follows its size exactly instead of the
+// smallest-attached-client rule (see recomputeSize). If other pinned
+// clients are already attached, this one takes precedence over them --
+// last pin wins -- but they remain queued: if this one later disconnects,
+// authority falls back to the next most recently pinned client still
+// attached.
+//
 // The caller must Unsubscribe when done to avoid leaking the channel and
 // its goroutine.
-func (s *Session) Subscribe(cols, rows uint16) (c *Client, backlog []byte) {
+func (s *Session) Subscribe(cols, rows uint16, pinned bool) (c *Client, backlog []byte) {
 	c = &Client{
 		data:    make(chan []byte, 256),
 		resized: make(chan Size, 1),
+		pinned:  pinned,
 	}
 	s.mu.Lock()
 	backlog = append([]byte(nil), s.backlog...)
 	s.clients[c] = struct{}{}
 	s.clientSizes[c] = Size{cols, rows}
+	if pinned {
+		s.pinnedOrder = append(s.pinnedOrder, c)
+	}
 	s.mu.Unlock()
 	s.recomputeSize()
 	// Tell the new client the applied size even when it didn't change it
@@ -198,7 +230,8 @@ func (s *Session) Subscribe(cols, rows uint16) (c *Client, backlog []byte) {
 
 // Unsubscribe removes and closes a listener registered with Subscribe,
 // then re-fits the pty in case the departing client was the one
-// constraining the size to something smaller than the rest.
+// constraining the size (as the smallest attached client, or as the
+// pinned client -- see recomputeSize).
 func (s *Session) Unsubscribe(c *Client) {
 	s.mu.Lock()
 	if _, ok := s.clients[c]; ok {
@@ -206,39 +239,56 @@ func (s *Session) Unsubscribe(c *Client) {
 		delete(s.clientSizes, c)
 		close(c.data)
 	}
+	for i, p := range s.pinnedOrder {
+		if p == c {
+			s.pinnedOrder = append(s.pinnedOrder[:i], s.pinnedOrder[i+1:]...)
+			break
+		}
+	}
 	s.mu.Unlock()
 	s.recomputeSize()
 }
 
-// recomputeSize re-fits the pty to the smallest cols and smallest rows
-// among all currently attached clients (tmux's default behavior for a
-// session with multiple attached clients of different window sizes): no
-// client ever gets a viewport bigger than its own actual terminal.
+// recomputeSize re-fits the pty. If a pinned client (a fixed-size
+// terminal, e.g. a hardware console) is attached, the most recently
+// pinned one's size is used exactly, overriding everything else.
+// Otherwise the pty follows the smallest cols and smallest rows among all
+// currently attached clients (tmux's default behavior for a session with
+// multiple attached clients of different window sizes): no client ever
+// gets a viewport bigger than its own actual terminal.
 func (s *Session) recomputeSize() error {
 	s.mu.Lock()
-	var min Size
-	first := true
-	for _, sz := range s.clientSizes {
-		if first || sz.Cols < min.Cols {
-			min.Cols = sz.Cols
+	var target Size
+	if n := len(s.pinnedOrder); n > 0 {
+		target = s.clientSizes[s.pinnedOrder[n-1]]
+	} else {
+		first := true
+		for _, sz := range s.clientSizes {
+			if first || sz.Cols < target.Cols {
+				target.Cols = sz.Cols
+			}
+			if first || sz.Rows < target.Rows {
+				target.Rows = sz.Rows
+			}
+			first = false
 		}
-		if first || sz.Rows < min.Rows {
-			min.Rows = sz.Rows
+		if first {
+			s.mu.Unlock()
+			return nil
 		}
-		first = false
 	}
-	if first || min == s.curSize {
+	if target == s.curSize {
 		s.mu.Unlock()
 		return nil
 	}
-	s.curSize = min
+	s.curSize = target
 	// Broadcast the new applied size so every client can re-wipe the margin
 	// its terminal has beyond the (now smaller/larger) session viewport.
 	for c := range s.clients {
-		c.notifyResize(min)
+		c.notifyResize(target)
 	}
 	s.mu.Unlock()
-	return s.pty.Resize(min.Cols, min.Rows)
+	return s.pty.Resize(target.Cols, target.Rows)
 }
 
 func (s *Session) broadcast(b []byte) {

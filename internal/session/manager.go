@@ -9,6 +9,7 @@ import (
 type Info struct {
 	Name    string
 	Clients int
+	Pinned  bool
 }
 
 // Manager tracks named persistent sessions. Ephemeral sessions (name =="")
@@ -67,7 +68,7 @@ func (m *Manager) List() []Info {
 	defer m.mu.Unlock()
 	out := make([]Info, 0, len(m.sessions))
 	for name, s := range m.sessions {
-		out = append(out, Info{Name: name, Clients: s.ClientCount()})
+		out = append(out, Info{Name: name, Clients: s.ClientCount(), Pinned: s.Pinned()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

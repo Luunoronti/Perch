@@ -11,8 +11,11 @@ winres:
 	cd cmd/client && go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest -o resource_windows_amd64.syso -64 versioninfo.json
 	cd cmd/server && go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest -o resource_windows_amd64.syso -64 versioninfo.json
 
+# -H=windowsgui puts the server in the GUI subsystem so tray mode (-tray)
+# never flashes a console window (e.g. at login via the Run key). Console
+# mode reattaches to the launching terminal at runtime -- see attachConsole.
 server: winres
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o dist/perch-server.exe ./cmd/server
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui" -o dist/perch-server.exe ./cmd/server
 
 client-386:
 	CGO_ENABLED=0 GOOS=linux GOARCH=386 go build -o dist/perch-386 ./cmd/client

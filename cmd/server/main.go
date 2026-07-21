@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -20,7 +21,28 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to server config JSON (default: <config dir>/server.json)")
 	listenAddr := flag.String("listen", "", "override listen address:port")
+	tray := flag.Bool("tray", false, "run in the Windows system tray instead of the console; survives terminal-window close, logs to a file (Windows only)")
 	flag.Parse()
+
+	// The binary is built for the Windows GUI subsystem so tray mode never
+	// flashes a console. As a result, plain console mode also starts without
+	// one: reattach to the launching terminal so logs are visible. Tray mode
+	// instead logs to a file. Do this before anything logs anything.
+	if *tray {
+		// If we were launched from a terminal, the shell waits on us and its
+		// job object would kill us when the terminal closes. Relaunch fully
+		// detached and let this (parent) process exit right away, so nothing
+		// waits and the tray survives the terminal closing.
+		if trayHasConsole() {
+			if err := relaunchDetached(); err == nil {
+				return
+			}
+			// Relaunch failed; fall through and run in-process instead.
+		}
+		setupFileLogging()
+	} else {
+		attachConsole()
+	}
 
 	if ok, err := winsession.IsInteractive(); err != nil {
 		log.Printf("warning: could not determine session type: %v", err)
@@ -55,14 +77,43 @@ func main() {
 
 	mgr := session.NewManager()
 
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("accept: %v", err)
-			continue
+	serve := func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				log.Printf("accept: %v", err)
+				continue
+			}
+			go handleConn(conn, cfg, mgr)
 		}
-		go handleConn(conn, cfg, mgr)
 	}
+
+	// Tray mode runs the accept loop in the background and hands the main
+	// thread to the Windows message pump (see tray_windows.go). Console mode
+	// just serves inline as before.
+	if *tray {
+		log.Printf("running in the system tray")
+		if err := runTray(cfg.Listen, serve); err != nil {
+			log.Fatalf("tray: %v", err)
+		}
+		return
+	}
+	serve()
+}
+
+// setupFileLogging redirects the standard logger to <config dir>/server.log,
+// used in tray mode where no console is attached. On any failure it leaves
+// logging as-is rather than aborting startup.
+func setupFileLogging() {
+	dir, err := config.Dir()
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "server.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	log.SetOutput(f)
 }
 
 func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
@@ -91,7 +142,11 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 		log.Printf("%s: expected SESSION or LIST_SESSIONS as first frame, got %v", remote, frame.Type)
 		return
 	}
-	name := string(frame.Payload)
+	name, pinned, err := proto.DecodeSession(frame.Payload)
+	if err != nil {
+		log.Printf("%s: %v", remote, err)
+		return
+	}
 
 	frame, err = proto.ReadFrame(conn)
 	if err != nil {
@@ -113,16 +168,20 @@ func handleConn(conn net.Conn, cfg config.ServerConfig, mgr *session.Manager) {
 		log.Printf("%s: start session: %v", remote, err)
 		return
 	}
+	pinnedNote := ""
+	if pinned {
+		pinnedNote = " (pinned: fixed-size terminal, its size now governs the session)"
+	}
 	if existed {
-		log.Printf("%s: attached to persistent session %q", remote, name)
+		log.Printf("%s: attached to persistent session %q%s", remote, name, pinnedNote)
 	} else if name != "" {
-		log.Printf("%s: started persistent session %q", remote, name)
+		log.Printf("%s: started persistent session %q%s", remote, name, pinnedNote)
 	}
 
 	// Subscribe registers this client's initial size and re-fits the pty
-	// to the smallest attached client (spec §6.3) -- important the moment
-	// a second client joins with a smaller terminal than the first.
-	out, backlog := sess.Subscribe(cols, rows)
+	// to the smallest attached client, or to this one exactly if it's
+	// pinned (spec §6.3).
+	out, backlog := sess.Subscribe(cols, rows, pinned)
 	defer sess.Unsubscribe(out)
 
 	if len(backlog) > 0 {
@@ -222,7 +281,11 @@ func formatSessionList(infos []session.Info) string {
 		if info.Clients == 1 {
 			plural = ""
 		}
-		fmt.Fprintf(&b, "%s (%d client%s attached)\n", info.Name, info.Clients, plural)
+		pinned := ""
+		if info.Pinned {
+			pinned = ", pinned"
+		}
+		fmt.Fprintf(&b, "%s (%d client%s attached%s)\n", info.Name, info.Clients, plural, pinned)
 	}
 	return b.String()
 }

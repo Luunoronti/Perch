@@ -1,4 +1,5 @@
 {
+  "IconPath": "icon.ico",
   "FixedFileInfo": {
     "FileVersion": { "Major": 0, "Minor": 5, "Patch": 0, "Build": 0 },
     "ProductVersion": { "Major": 0, "Minor": 5, "Patch": 0, "Build": 0 },

@@ -35,7 +35,9 @@ jobs:
           done
 
       - name: Build server (windows/amd64)
-        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o dist/perch-server.exe ./cmd/server
+        # -H=windowsgui: GUI subsystem so tray mode never flashes a console;
+        # console mode reattaches to the parent terminal at runtime.
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui" -o dist/perch-server.exe ./cmd/server
 
       - name: Build client (linux/386)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=386 go build -o dist/perch-386 ./cmd/client
